@@ -53,12 +53,11 @@ body:
       label: 是否 MTK 设备 / MTK device?
       description: |
         MTK 指联发科（MediaTek）芯片，很多人不知道自己是不是。不确定请直接选「不确定」，把上面的型号写清楚即可。
-
         MTK = MediaTek SoC. If you are not sure, choose “Not sure” and fill in the model above.
       options:
         - "是 / Yes"
         - "否 / No"
-        - 不确定（不清楚什么是 MTK 也选这个）/ Not sure
+        - 不确定/ Not sure
     validations:
       required: true
 
