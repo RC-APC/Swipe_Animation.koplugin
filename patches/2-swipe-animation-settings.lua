@@ -42,16 +42,14 @@ local ok, err = pcall(function()
         ["Portrait"] = "竖屏",
         [ [[
 Enter the delay between animation frames, in milliseconds.
-
-Lower values are faster but may cause more ghosting.
-Higher values are slower but usually look cleaner.
+0 = no extra pause (pace with strip refresh).
+Lower is faster, higher is slower.
 
 Current orientation: %1
 Current default: %2 ms]] ] = [[
 输入每一帧之间的延迟，单位为毫秒。
-
-数值越低，速度越快，但可能残影更明显。
-数值越高，速度越慢，但显示可能更干净。
+0 = 不再额外停顿（节奏交给条带刷新）。
+数值越低，速度越快，数值越高，速度越慢。
 
 当前保存方向：%1
 当前默认值：%2 毫秒]],
@@ -107,19 +105,17 @@ The refresh mode directly affects the quality and ghosting of each strip update 
         ["Portrait"] = "Modo retrato",
         [ [[
 Enter the delay between animation frames, in milliseconds.
-
-Lower values are faster but may cause more ghosting.
-Higher values are slower but usually look cleaner.
+0 = no extra pause (pace with strip refresh).
+Lower is faster, higher is slower.
 
 Current orientation: %1
 Current default: %2 ms]] ] = [[
 Insira o intervalo entre quadros da animação, em milissegundos.
-
-Valores menores são mais rápidos, mas podem gerar mais ghosting.
-Valores maiores são mais lentos, mas geralmente resultam em imagens mais limpas.
+0 = sem pausa extra (ritmo pela atualização das faixas).
+Menor é mais rápido, maior é mais lento.
 
 Orientação atual: %1
-Padrão da orientação atual: %2 ms]],
+Padrão atual: %2 ms]],
         [ [[
 Choose the refresh type used for each strip of the software swipe animation.
 
@@ -249,22 +245,22 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
 
     local function getConfiguredSwipeAnimationDelayMs()
         local key = getSwipeAnimationDelaySettingKey()
-        local delay_ms = tonumber(G_reader_settings:readSetting(key)) or 0
-        if delay_ms <= 0 then
-            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms")) or 0
+        local delay_ms = tonumber(G_reader_settings:readSetting(key))
+        if delay_ms == nil then
+            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms"))
         end
-        if delay_ms > 0 then
-            return delay_ms
+        if delay_ms == nil or delay_ms < 0 then
+            return nil
         end
-        return nil
+        return delay_ms
     end
 
     local function saveConfiguredSwipeAnimationDelayMs(delay_ms)
         local key = getSwipeAnimationDelaySettingKey()
-        if delay_ms and delay_ms > 0 then
-            G_reader_settings:saveSetting(key, delay_ms)
-        else
+        if delay_ms == nil or delay_ms < 0 then
             G_reader_settings:delSetting(key)
+        else
+            G_reader_settings:saveSetting(key, delay_ms)
         end
     end
     -- ==================== Mild global refresh for the independent counter ====================
@@ -315,9 +311,8 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
             input_type = "number",
             description = T(_([[
 Enter the delay between animation frames, in milliseconds.
-
-Lower values are faster but may cause more ghosting.
-Higher values are slower but usually look cleaner.
+0 = no extra pause (pace with strip refresh).
+Lower is faster, higher is slower.
 
 Current orientation: %1
 Current default: %2 ms]]), orientation_label, default_delay_ms),
@@ -342,7 +337,7 @@ Current default: %2 ms]]), orientation_label, default_delay_ms),
                         is_enter_default = true,
                         callback = function()
                             local value = input_dialog:getInputValue()
-                            if not value or value < 1 then
+                            if value == nil or value < 0 then
                                 saveConfiguredSwipeAnimationDelayMs(nil)
                             else
                                 saveConfiguredSwipeAnimationDelayMs(value)
