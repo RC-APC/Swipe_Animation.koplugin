@@ -14,13 +14,22 @@
     2. the SwipeAnimation module: full-refresh / clearing decisions and the
        wipe animation itself (runSwipeAnimation), called from
        UIManager:_repaint after the new page is painted.
-    3. Kobo MTK fence immediately before the wipe loop: drain a leftover
-       PARTIAL, or pay one AUTO+wait after a FULL, so the first strips are
-       not blocked by HWTCON serialization.
+    3. post-resume display warm-up on MTK Kobos: the display controller is
+       still cold after wake-up, so the first software wipe animation would
+       run in slow motion because every UI-waveform strip refresh blocks on
+       the still-cold controller. Right after resume we issue a few invisible
+       full-screen UI refreshes to warm the controller up, so the first page
+       turn animates normally at full speed.
 
     Prefer original data sources, but trigger Screen:refreshFull / refreshPartial
     directly (because we are inside _repaint, where setDirty would be deferred
     and ineffective).
+
+    Note: This plugin works on both touch and non-touch devices. On non-touch
+    devices (e.g. Kindle 3 / Kindle Keyboard), page turns via physical buttons
+    emit the same PageChangeAnimation event as touch swipes, so the software
+    wipe animation is triggered identically. The animation defaults are adjusted
+    per device type in UIManager.swipe_animation_defaults.
 ]]
 
 local ok, err = pcall(function()
@@ -94,6 +103,43 @@ local ok, err = pcall(function()
     local ffi = require("ffi")
 
     local SwipeAnimation = {}
+
+    ---------------------------------------------------------------
+    --     Post-resume display warm-up on MTK Kobo
+    ---------------------------------------------------------------
+    if not UIManager._swipe_animation_resume_warmup_patched then
+        UIManager._swipe_animation_resume_warmup_patched = true
+
+        local orig_broadcastEvent = UIManager.broadcastEvent
+        function UIManager:broadcastEvent(ev)
+            local ret = orig_broadcastEvent(self, ev)
+            if ev and ev.handler == "onResume"
+                    and Device:isKobo() and Device:isMTK()
+                    and G_reader_settings:isTrue("swipe_animations") then
+                UIManager:scheduleIn(0.3, function()
+                    if Device.screen_saver_mode then
+                        return -- device went back to sleep meanwhile
+                    end
+                    local bb = Screen.bb
+                    if not bb then
+                        return
+                    end
+                    local warmup_w = bb:getWidth()
+                    local warmup_h = bb:getHeight()
+                    if warmup_w <= 0 or warmup_h <= 0 then
+                        return
+                    end
+                    -- Same refresh count as a portrait wipe animation, so the
+                    -- controller is exercised just as much as it was during
+                    -- the previously slow first turn.
+                    for _ = 1, 8 do
+                        Screen:refreshUI(0, 0, warmup_w, warmup_h)
+                    end
+                end)
+            end
+            return ret
+        end
+    end
 
     ---------------------------------------------------------------
     -- 2.1 Whether to skip the animation and perform a clearing refresh
@@ -225,28 +271,6 @@ local ok, err = pcall(function()
     --     before the queued refreshes are executed). Handles the clearing /
     --     forced-full decisions and the strip animation.
     ---------------------------------------------------------------
-    -- Interior cuts snap to `align` (Screen.alignment_constraint, 16 on
-    -- Kobo MTK) so getBoundedRect does not expand neighbouring strips
-    -- into each other. Last edge stays the real width.
-    local function buildStripEdges(screen_w, steps, align)
-        local edges = {0}
-        local use_align = type(align) == "number" and align >= 2
-        for i = 1, steps - 1 do
-            local raw = screen_w * i / steps
-            local cut
-            if use_align then
-                cut = math.floor((raw + align / 2) / align) * align
-            else
-                cut = math.floor(raw)
-            end
-            if cut > edges[#edges] and cut < screen_w then
-                edges[#edges + 1] = cut
-            end
-        end
-        edges[#edges + 1] = screen_w
-        return edges
-    end
-
     function SwipeAnimation.runSwipeAnimation(self)
         local screen_w = Screen.bb:getWidth()
         local screen_h = Screen.bb:getHeight()
@@ -307,22 +331,19 @@ local ok, err = pcall(function()
         -- Defaults come from UIManager.swipe_animation_defaults (single source of truth).
         local is_landscape = screen_w > screen_h
         local delay_defaults = (UIManager.swipe_animation_defaults or {}).delay_ms or {}
-        local anim_refresh_mode = G_reader_settings:readSetting("swipe_animation_refresh_mode") or "ui"
-        local delay_ms
-        if is_landscape then
-            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms_horizontal"))
-        else
-            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms_vertical"))
-        end
-        if delay_ms == nil then
-            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms"))
-        end
-        -- Unset: 10/20ms for both UI and Fast. Explicit 0 means no usleep.
-        if delay_ms == nil or delay_ms < 0 then
+        local delay_ms = is_landscape
+            and (tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms_horizontal")) or 0)
+            or  (tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms_vertical")) or 0)
+        if delay_ms <= 0 then
             delay_ms = is_landscape
                 and (delay_defaults.landscape or 10)
                 or  (delay_defaults.portrait or 20)
         end
+        local delay_us = delay_ms * 1000
+
+        -- Allow user to choose "ui" or "fast" for the per-strip refreshes.
+        local anim_refresh_mode = G_reader_settings:readSetting("swipe_animation_refresh_mode") or "ui"
+        local refresh_fn = anim_refresh_mode == "fast" and Screen.refreshFast or Screen.refreshUI
 
         -- Hoisted for slight efficiency in the animation loop
         local usleep = ffi and ffi.C and ffi.C.usleep
@@ -334,51 +355,32 @@ local ok, err = pcall(function()
             or  (step_defaults.portrait or 8)
         local swipe_forward = Screen.swipe_forward
         if swipe_forward == nil then
-            -- Some framebuffer implementations never call setSwipeDirection();
-            -- default to the forward direction instead of always sweeping one way.
+            -- Some framebuffer implementations (especially on non-touch devices
+            -- like Kindle 3) never call setSwipeDirection(); default to the
+            -- forward direction instead of always sweeping one way.
             swipe_forward = true
         end
-        local edges = buildStripEdges(screen_w, steps, Screen.alignment_constraint)
-        local nslots = #edges - 1
+        local prev_dx = 0
 
         -- Draw the previous page as the starting background
         Screen.bb:blitFrom(saved_bb, 0, 0, 0, 0, screen_w, screen_h)
 
-        -- Kobo MTK: leftover PARTIAL AUTO still serializes the first strip;
-        -- after a FULL, waitForLast is a no-op (dont_wait_for_marker == marker)
-        -- so pay one AUTO+wait here. Consecutive turns skip the extra refresh.
-        if Device:isKobo() and Device:isMTK() then
-            if Screen.refreshWaitForLast then
-                Screen:refreshWaitForLast()
-            end
-            if Screen.dont_wait_for_marker == Screen.marker then
-                Screen:refreshUI(0, 0, screen_w, screen_h)
-                if Screen.refreshWaitForLast then
-                    Screen:refreshWaitForLast()
-                end
-            end
-        end
-
         -- Animate page turn by progressively revealing vertical strips of the new page.
-        for i = 1, nslots do
-            local left, right
-            if swipe_forward then
-                local idx = nslots - i + 1
-                left = edges[idx]
-                right = edges[idx + 1]
-            else
-                left = edges[i]
-                right = edges[i + 1]
-            end
-            local strip_w = right - left
-            local use_fast = anim_refresh_mode == "fast"
+        for i = 1, steps do
+            local progress = i / steps
+            local dx = math.floor(screen_w * progress)
+            local strip_w = dx - prev_dx
             if strip_w > 0 then
-                Screen.bb:blitFrom(new_bb, left, 0, left, 0, strip_w, screen_h)
-                local refresh_fn = use_fast and Screen.refreshFast or Screen.refreshUI
-                refresh_fn(Screen, left, 0, strip_w, screen_h)
+                local strip_x = swipe_forward and (screen_w - dx) or prev_dx
+                -- Copy a vertical strip from the new page onto the current screen buffer
+                Screen.bb:blitFrom(new_bb, strip_x, 0, strip_x, 0, strip_w, screen_h)
+                refresh_fn(Screen, strip_x, 0, strip_w, screen_h)
             end
-            if i < nslots and usleep and delay_ms > 0 then
-                usleep(delay_ms * 1000)
+            prev_dx = dx
+
+            -- Skip sleep on the last frame
+            if i < steps and usleep then
+                usleep(delay_us)
             end
         end
 

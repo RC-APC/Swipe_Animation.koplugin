@@ -6,6 +6,10 @@ local ok, err = pcall(function()
     -- software animation in UIManager:_repaint handles the effect, so we
     -- always claim the capability to expose the "Page turn animations"
     -- toggle and keep the PageChangeAnimation event plumbing active.
+    -- On non-touch devices (e.g. Kindle 3 / Kindle Keyboard), page turns
+    -- via physical buttons still emit the PageChangeAnimation event through
+    -- ReaderRolling/ReaderPaging, so the software wipe animation works the
+    -- same way as on touch devices.
     Device.canDoSwipeAnimation = function()
         return true
     end
@@ -15,6 +19,10 @@ local ok, err = pcall(function()
     local Screen = Device.screen
     local UIManager = require("ui/uimanager")
     local T = require("ffi/util").template
+
+    -- Detect non-touch devices (e.g. Kindle 3 / Kindle Keyboard) to adjust
+    -- menu injection and default animation parameters accordingly.
+    local is_non_touch = not Device:isTouchDevice()
 
     -- Localized strings. English is the gettext source language; until these
     -- strings are added to KOReader's l10n catalogs, provide a built-in
@@ -38,18 +46,21 @@ local ok, err = pcall(function()
         ["%1 animation frame delay: default %2 ms"] = "%1动画帧延迟：默认 %2 毫秒",
         ["Mild global refresh"] = "轻度全局刷新",
         ["Swipe animation settings"] = "翻页动画设置",
+        ["Page turn animations"] = "翻页动画",
         ["Landscape"] = "横屏",
         ["Portrait"] = "竖屏",
         [ [[
 Enter the delay between animation frames, in milliseconds.
-0 = no extra pause (pace with strip refresh).
-Lower is faster, higher is slower.
+
+Lower values are faster but may cause more ghosting.
+Higher values are slower but usually look cleaner.
 
 Current orientation: %1
 Current default: %2 ms]] ] = [[
 输入每一帧之间的延迟，单位为毫秒。
-0 = 不再额外停顿（节奏交给条带刷新）。
-数值越低，速度越快，数值越高，速度越慢。
+
+数值越低，速度越快，但可能残影更明显。
+数值越高，速度越慢，但显示可能更干净。
 
 当前保存方向：%1
 当前默认值：%2 毫秒]],
@@ -82,12 +93,34 @@ When unset, the default for the current orientation is shown.]] ] = [[
 
 • 未勾选：使用 Full 刷新（适用于图文内容）]],
         [ [[
-Adjust the speed (frame delay) and refresh mode (UI / Fast) of the software swipe animation.
+Adjust the speed (frame delay) and refresh mode (UI / Fast) of the software page turn animation.
+
+The animation itself must first be enabled via the "Page turn animations" checkbox:
+on non-touch devices it is right above this entry (in the Navigation menu),
+on touch devices it is under Taps and gestures > Page turns.
+
+This works with both touch gestures and physical page-turn buttons.
+On non-touch devices (e.g. Kindle Keyboard), page turns via buttons
+will trigger the animation the same way as swipes do.
 
 The refresh mode directly affects the quality and ghosting of each strip update during the animation.]] ] = [[
 调整软件翻页动画的速度（帧延迟）和画面更新刷新模式（UI / Fast）。
 
+需先勾选「翻页动画」开启动画本身：
+非触屏设备中该开关位于本条目正上方（导航菜单内），
+触屏设备中位于「动作手势 → 翻页」内。
+
+本动画同时支持触摸滑动和物理翻页按键操作。
+在非触屏设备（如 Kindle Keyboard）上，按键翻页同样会触发动画效果。
+
 刷新模式直接影响动画期间每条画面的更新质量与残影表现。]],
+        [ [[
+Enable the software page turn animation (wipe effect).
+
+Both touch swipes and physical page-turn buttons trigger the animation.]] ] = [[
+开启软件翻页动画（擦除效果）。
+
+触摸滑动与物理翻页按键触发的翻页均会播放动画。]],
     }
     local pt_BR_fallback = {
         ["Animation frame delay"] = "Intervalo entre quadros da animação",
@@ -101,21 +134,24 @@ The refresh mode directly affects the quality and ghosting of each strip update 
         ["%1 animation frame delay: default %2 ms"] = "%1 - intervalo entre quadros: padrão (%2 ms)",
         ["Mild global refresh"] = "Atualização global moderada",
         ["Swipe animation settings"] = "Configurações da animação de deslizar",
+        ["Page turn animations"] = "Animação de virada de página",
         ["Landscape"] = "Modo paisagem",
         ["Portrait"] = "Modo retrato",
         [ [[
 Enter the delay between animation frames, in milliseconds.
-0 = no extra pause (pace with strip refresh).
-Lower is faster, higher is slower.
+
+Lower values are faster but may cause more ghosting.
+Higher values are slower but usually look cleaner.
 
 Current orientation: %1
 Current default: %2 ms]] ] = [[
 Insira o intervalo entre quadros da animação, em milissegundos.
-0 = sem pausa extra (ritmo pela atualização das faixas).
-Menor é mais rápido, maior é mais lento.
+
+Valores menores são mais rápidos, mas podem gerar mais ghosting.
+Valores maiores são mais lentos, mas geralmente resultam em imagens mais limpas.
 
 Orientação atual: %1
-Padrão atual: %2 ms]],
+Padrão da orientação atual: %2 ms]],
         [ [[
 Choose the refresh type used for each strip of the software swipe animation.
 
@@ -146,12 +182,35 @@ Quando inalterado, o padrão para a orientação atual é exibido.]],
 
 • Desmarcado: utiliza atualização total (para conteúdos com imagens)]],
         [ [[
-Adjust the speed (frame delay) and refresh mode (UI / Fast) of the software swipe animation.
+Adjust the speed (frame delay) and refresh mode (UI / Fast) of the software page turn animation.
+
+The animation itself must first be enabled via the "Page turn animations" checkbox:
+on non-touch devices it is right above this entry (in the Navigation menu),
+on touch devices it is under Taps and gestures > Page turns.
+
+This works with both touch gestures and physical page-turn buttons.
+On non-touch devices (e.g. Kindle Keyboard), page turns via buttons
+will trigger the animation the same way as swipes do.
 
 The refresh mode directly affects the quality and ghosting of each strip update during the animation.]] ] = [[
-Ajusta a velocidade (intervalo de quadros) e o modo de atualização (Interface / Rápido) da animação de deslizar por software.
+Ajusta a velocidade (intervalo de quadros) e o modo de atualização (Interface / Rápido) da animação de virada de página por software.
+
+A animação deve primeiro ser ativada pela opção "Animação de virada de página":
+em dispositivos sem tela sensível ao toque, ela fica logo acima desta entrada (no menu Navegação);
+em dispositivos com toque, em Toques e gestos > Virada de página.
+
+Funciona tanto com gestos de toque quanto com botões físicos de virada de página.
+Em dispositivos sem toque (ex.: Kindle Keyboard), virar páginas com botões
+dispara a animação da mesma forma que os deslizes.
 
 O modo de atualização impacta diretamente na qualidade e no ghosting de cada faixa de atualização durante a animação.]],
+        [ [[
+Enable the software page turn animation (wipe effect).
+
+Both touch swipes and physical page-turn buttons trigger the animation.]] ] = [[
+Ativa a animação de virada de página por software (efeito de apagamento).
+
+Viradas de página por deslizes e por botões físicos são animadas.]],
     }
 
     local function _(msgid)
@@ -178,6 +237,12 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
     end
 
     local MENU_KEY = "swipe_animation_settings"
+    -- Menu key of the master "Page turn animations" toggle. Injected next to
+    -- the settings entry on non-touch devices only: upstream KOReader builds
+    -- the "Page turns" submenu (which owns this toggle) exclusively for touch
+    -- devices, so without our own toggle it would be unreachable there and
+    -- the animation could never be enabled.
+    local TOGGLE_KEY = "swipe_animation_toggle"
 
     if ReaderMenu._swipe_animation_settings_patch_applied then
         return
@@ -198,28 +263,76 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
         end
     end
 
-    local function ensureMenuKey(order_table)
+    -- Insert our menu keys into an order table. When include_toggle is set,
+    -- the master toggle is inserted right before the settings entry.
+    local function ensureMenuKeys(order_table, include_toggle)
         if type(order_table) ~= "table" then
             return
         end
 
         for i = #order_table, 1, -1 do
-            if order_table[i] == MENU_KEY then
+            if order_table[i] == MENU_KEY or order_table[i] == TOGGLE_KEY then
                 table.remove(order_table, i)
             end
         end
 
+        local insert_at
         for index, key in ipairs(order_table) do
             if key == "page_turns" then
-                table.insert(order_table, index + 1, MENU_KEY)
-                return
+                insert_at = index + 1
+                break
             end
         end
+        if not insert_at then
+            insert_at = #order_table + 1
+        end
 
-        table.insert(order_table, MENU_KEY)
+        if include_toggle then
+            table.insert(order_table, insert_at, TOGGLE_KEY)
+            insert_at = insert_at + 1
+        end
+        table.insert(order_table, insert_at, MENU_KEY)
     end
 
-    ensureMenuKey(reader_menu_order.taps_and_gestures)
+    -- Inject the settings menu key into the appropriate menu tab.
+    -- On touch devices, "taps_and_gestures" is always available, and the
+    -- upstream master toggle is reachable under its "Page turns" submenu.
+    -- On non-touch devices (e.g. Kindle 3), upstream KOReader never builds
+    -- the "Page turns" submenu (readermenu.lua guards it behind
+    -- Device:isTouchDevice()), so the master "Page turn animations" toggle
+    -- would be unreachable and our settings entry would stay disabled
+    -- forever. We therefore also inject into the "navigation" tab both the
+    -- settings entry and our own master toggle, so the animation can be
+    -- enabled with physical buttons only.
+    local function ensureMenuKeyInTabs()
+        local injected = false
+
+        -- Primary: taps_and_gestures (works on all devices that show this tab)
+        if type(reader_menu_order.taps_and_gestures) == "table" then
+            ensureMenuKeys(reader_menu_order.taps_and_gestures, false)
+            injected = true
+        end
+
+        -- Non-touch devices: also inject into the navigation tab, together
+        -- with a master toggle replicating the upstream "Page turn
+        -- animations" checkbox.
+        if is_non_touch and type(reader_menu_order.navigation) == "table" then
+            ensureMenuKeys(reader_menu_order.navigation, true)
+            injected = true
+        end
+
+        -- Last-resort fallback: try navi (short form used in some KOReader
+        -- versions); include the toggle there too, as it is only injected on
+        -- non-touch devices where the upstream toggle is unreachable anyway.
+        if not injected and type(reader_menu_order.navi) == "table" then
+            ensureMenuKeys(reader_menu_order.navi, true)
+            injected = true
+        end
+
+        return injected
+    end
+
+    ensureMenuKeyInTabs()
 
     local function isLandscapeScreen()
         return Screen.bb:getWidth() > Screen.bb:getHeight()
@@ -227,6 +340,10 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
 
     -- Simplified defaults come from UIManager.swipe_animation_defaults
     -- (the single source of truth for the animation tuning).
+    -- On non-touch devices (e.g. Kindle 3 with older/slower e-ink controller),
+    -- UIManager.swipe_animation_defaults may have been adjusted to use higher
+    -- delays and fewer steps; this function returns those device-appropriate
+    -- defaults.
     local function getAutomaticSwipeAnimationDelayMs()
         local delay_defaults = (UIManager.swipe_animation_defaults or {}).delay_ms or {}
         if isLandscapeScreen() then
@@ -245,22 +362,22 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
 
     local function getConfiguredSwipeAnimationDelayMs()
         local key = getSwipeAnimationDelaySettingKey()
-        local delay_ms = tonumber(G_reader_settings:readSetting(key))
-        if delay_ms == nil then
-            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms"))
+        local delay_ms = tonumber(G_reader_settings:readSetting(key)) or 0
+        if delay_ms <= 0 then
+            delay_ms = tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms")) or 0
         end
-        if delay_ms == nil or delay_ms < 0 then
-            return nil
+        if delay_ms > 0 then
+            return delay_ms
         end
-        return delay_ms
+        return nil
     end
 
     local function saveConfiguredSwipeAnimationDelayMs(delay_ms)
         local key = getSwipeAnimationDelaySettingKey()
-        if delay_ms == nil or delay_ms < 0 then
-            G_reader_settings:delSetting(key)
-        else
+        if delay_ms and delay_ms > 0 then
             G_reader_settings:saveSetting(key, delay_ms)
+        else
+            G_reader_settings:delSetting(key)
         end
     end
     -- ==================== Mild global refresh for the independent counter ====================
@@ -311,8 +428,9 @@ O modo de atualização impacta diretamente na qualidade e no ghosting de cada f
             input_type = "number",
             description = T(_([[
 Enter the delay between animation frames, in milliseconds.
-0 = no extra pause (pace with strip refresh).
-Lower is faster, higher is slower.
+
+Lower values are faster but may cause more ghosting.
+Higher values are slower but usually look cleaner.
 
 Current orientation: %1
 Current default: %2 ms]]), orientation_label, default_delay_ms),
@@ -337,7 +455,7 @@ Current default: %2 ms]]), orientation_label, default_delay_ms),
                         is_enter_default = true,
                         callback = function()
                             local value = input_dialog:getInputValue()
-                            if value == nil or value < 0 then
+                            if not value or value < 1 then
                                 saveConfiguredSwipeAnimationDelayMs(nil)
                             else
                                 saveConfiguredSwipeAnimationDelayMs(value)
@@ -441,14 +559,46 @@ When unset, the default for the current orientation is shown.]]),
         }
     end
 
+    -- Master toggle replicating the upstream "Page turn animations"
+    -- checkbox (frontend/ui/elements/page_turns.lua), which upstream only
+    -- shows on touch devices. Injected on non-touch devices so that the
+    -- animation can be enabled at all.
+    local function buildToggleMenuItem()
+        return {
+            text = _("Page turn animations"),
+            checked_func = function()
+                return G_reader_settings:isTrue("swipe_animations")
+            end,
+            callback = function(touchmenu_instance)
+                G_reader_settings:flipNilOrFalse("swipe_animations")
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+            help_text = _([[
+Enable the software page turn animation (wipe effect).
+
+Both touch swipes and physical page-turn buttons trigger the animation.]]),
+        }
+    end
+
     local function buildSettingsMenu()
         return {
             text = _("Swipe animation settings"),
-            enabled_func = function()
-                return G_reader_settings:isTrue("swipe_animations")
-            end,
+            -- Deliberately no enabled_func here: on non-touch devices the
+            -- upstream master toggle is unreachable, so this entry must not
+            -- depend on the "swipe_animations" setting being enabled. The
+            -- fine-tuning sub-items stay disabled until the animation is on.
             help_text = _([[
-Adjust the speed (frame delay) and refresh mode (UI / Fast) of the software swipe animation.
+Adjust the speed (frame delay) and refresh mode (UI / Fast) of the software page turn animation.
+
+The animation itself must first be enabled via the "Page turn animations" checkbox:
+on non-touch devices it is right above this entry (in the Navigation menu),
+on touch devices it is under Taps and gestures > Page turns.
+
+This works with both touch gestures and physical page-turn buttons.
+On non-touch devices (e.g. Kindle Keyboard), page turns via buttons
+will trigger the animation the same way as swipes do.
 
 The refresh mode directly affects the quality and ghosting of each strip update during the animation.]]),
             sub_item_table = buildSwipeAnimationSubItems(),
@@ -463,12 +613,20 @@ The refresh mode directly affects the quality and ghosting of each strip update 
         local existing = menu_items[MENU_KEY]
         if type(existing) == "table" and existing._swipe_animation_settings_patch_item then
             existing.sub_item_table = buildSwipeAnimationSubItems()
-            return true
+        else
+            local item = buildSettingsMenu()
+            item._swipe_animation_settings_patch_item = true
+            menu_items[MENU_KEY] = item
         end
 
-        local item = buildSettingsMenu()
-        item._swipe_animation_settings_patch_item = true
-        menu_items[MENU_KEY] = item
+        -- On non-touch devices the upstream "Page turn animations" toggle is
+        -- unreachable (touch-only "Page turns" submenu), so provide our own.
+        if is_non_touch and not menu_items[TOGGLE_KEY] then
+            local toggle = buildToggleMenuItem()
+            toggle._swipe_animation_toggle_patch_item = true
+            menu_items[TOGGLE_KEY] = toggle
+        end
+
         return true
     end
 
